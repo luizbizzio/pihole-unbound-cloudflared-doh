@@ -209,6 +209,50 @@ restart_service() {
     fi
 }
 
+
+setup_adlists() {
+    log_message "INFO" "Adding custom adlists to /etc/pihole/gravity.db..."
+
+    # Vetor de adlists "URL|Comentario"
+    local ADLISTS=(
+        "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts|DefaultAllow"
+        "https://raw.githubusercontent.com/PolishFiltersTeam/KADhosts/master/KADhosts.txt|DefaultAllow"
+        "https://adaway.org/hosts.txt|DefaultAllow"
+        "https://v.firebog.net/hosts/AdguardDNS.txt|DefaultAllow"
+        "https://v.firebog.net/hosts/Easyprivacy.txt|DefaultAllow"
+        "https://v.firebog.net/hosts/Prigent-Ads.txt|DefaultAllow"
+        "https://raw.githubusercontent.com/DandelionSprout/adfilt/master/Alternate%20versions%20Anti-Malware%20List/AntiMalwareHosts.txt|DefaultAllow"
+        "https://zerodot1.gitlab.io/CoinBlockerLists/hosts_browser|DefaultAllow"
+        "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/domains/pro.plus.txt|DefaultAllow"
+    )
+
+    # Verifica se o /etc/pihole/gravity.db existe
+    if [ ! -f /etc/pihole/gravity.db ]; then
+        log_message "ERROR" "File /etc/pihole/gravity.db not found. Pi-hole likely not installed yet."
+        return 1
+    fi
+
+    # Inserir cada URL no adlist
+    for ENTRY in "${ADLISTS[@]}"; do
+        local URL=$(echo "$ENTRY" | cut -d'|' -f1)
+        local COMMENT=$(echo "$ENTRY" | cut -d'|' -f2)
+
+        log_message "INFO" "Inserting $URL (comment: $COMMENT)"
+        sqlite3 /etc/pihole/gravity.db <<SQL
+INSERT OR IGNORE INTO adlist (address, enabled, comment)
+VALUES ("$URL", 1, "$COMMENT");
+SQL
+    done
+
+    # Reinicia o DNS do Pi-hole para recarregar
+    log_message "INFO" "Restarting Pi-hole DNS after adlists insertion..."
+    pihole restartdns
+
+    log_message "INFO" "Adlists insertion completed!"
+}
+
+
+
 ##############################################################################
 # 8) Setup Functions
 ##############################################################################
@@ -336,6 +380,23 @@ EOPFTLCFG
 setup_tailscale() {
     log_message "INFO" "Installing Tailscale..."
 
+    # Ajuste no /etc/rc.local
+    if [ ! -f /etc/rc.local ]; then
+cat <<'EOF' > /etc/rc.local
+#!/bin/bash
+# rc.local for persistent custom commands
+
+exit 0
+EOF
+        chmod +x /etc/rc.local
+    fi
+    sed -i '/^exit 0$/d' /etc/rc.local
+
+cat <<'EOF' >> /etc/rc.local
+
+# Enable UDP GRO forwarding
+ethtool -K eth0 rx-udp-gro-forwarding on rx-gro-list off
+
     if [ "$OS_TYPE_FULL" = "fedora" ] || [ "$OS_TYPE_FULL" = "centos" ] || [ "$OS_TYPE_FULL" = "debian" ]; then
         # Instala via script universal
         curl -fsSL https://tailscale.com/install.sh | bash
@@ -361,23 +422,6 @@ setup_tailscale() {
 
     tailscale up --accept-routes --accept-dns=false --advertise-exit-node \
         --advertise-routes=192.168.0.0/24,192.168.1.0/24
-
-    # Ajuste no /etc/rc.local
-    if [ ! -f /etc/rc.local ]; then
-cat <<'EOF' > /etc/rc.local
-#!/bin/bash
-# rc.local for persistent custom commands
-
-exit 0
-EOF
-        chmod +x /etc/rc.local
-    fi
-    sed -i '/^exit 0$/d' /etc/rc.local
-
-cat <<'EOF' >> /etc/rc.local
-
-# Enable UDP GRO forwarding
-ethtool -K eth0 rx-udp-gro-forwarding on rx-gro-list off
 
 exit 0
 EOF
